@@ -99,7 +99,14 @@ export function createApp(db: DatabaseSync) {
     }
 
     const key = normalizeKey(rawKey);
-    const existing = one<Ledger>(db, "SELECT * FROM ledger WHERE idempotency_key = ?", key);
+    if (!key) return c.json({ error: "missão, data de aprovação e chave são obrigatórias" }, 400);
+    // A missão paga uma vez: além da chave, um lançamento já existente para a missão também segura o crédito.
+    const existing = one<Ledger>(
+      db,
+      "SELECT * FROM ledger WHERE idempotency_key = ? OR mission_id = ? ORDER BY created_at LIMIT 1",
+      key,
+      mission.id,
+    );
     if (existing) {
       const payout = one<Payout>(db, "SELECT * FROM payouts WHERE mission_id = ?", mission.id) ?? null;
       return c.json({ mission_id: mission.id, status: mission.status, ledger: existing, payout });
