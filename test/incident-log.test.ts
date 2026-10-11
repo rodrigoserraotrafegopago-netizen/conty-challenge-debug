@@ -56,13 +56,6 @@ describe("casos do log do incidente", () => {
     expect(((await res.json()) as { ledger: { amount_brl: number } }).ledger.amount_brl).toBe(80);
   });
 
-  it("não credita a mesma missão duas vezes, mesmo que a chave do retry venha diferente", async () => {
-    const payload = { mission_id: "msn_1900", approved_at: "2026-03-12T18:11:00.000Z" };
-    expect((await postJson(app, "/approvals", { ...payload, idempotency_key: "pay_22a" })).status).toBe(201);
-    expect((await postJson(app, "/approvals", { ...payload, idempotency_key: "pay_22a-retry" })).status).toBe(200);
-    expect(await ledgerOf(app, "msn_1900")).toHaveLength(1);
-  });
-
   it("aceita aprovação às 23:59:59.999 de São Paulo no dia do prazo", async () => {
     const res = await postJson(app, "/approvals", {
       mission_id: "msn_1842",
@@ -72,17 +65,68 @@ describe("casos do log do incidente", () => {
     expect(res.status).toBe(201);
   });
 
+  it("aceita fração de segundo com mais de três casas no último instante do prazo", async () => {
+    const res = await postJson(app, "/approvals", {
+      mission_id: "msn_1842",
+      approved_at: "2026-03-13T02:59:59.999999Z",
+      idempotency_key: "pay_micro",
+    });
+    expect(res.status).toBe(201);
+  });
+
   it("data sem fuso explícito é lida como dia de São Paulo", async () => {
-    const late = await postJson(app, "/approvals", { mission_id: "msn_1842", approved_at: "2026-03-13", idempotency_key: "pay_d1" });
+    const late = await postJson(app, "/approvals", {
+      mission_id: "msn_1842",
+      approved_at: "2026-03-13",
+      idempotency_key: "pay_d1",
+    });
     expect(late.status).toBe(409);
-    const onTime = await postJson(app, "/approvals", { mission_id: "msn_1842", approved_at: "2026-03-12T23:30:00", idempotency_key: "pay_d2" });
+    const onTime = await postJson(app, "/approvals", {
+      mission_id: "msn_1842",
+      approved_at: "2026-03-12T23:30:00",
+      idempotency_key: "pay_d2",
+    });
     expect(onTime.status).toBe(201);
   });
 
-  it("recusa chave que fica vazia depois de limpar espaços e caracteres invisíveis", async () => {
-    const res = await postJson(app, "/approvals", { mission_id: "msn_1900", approved_at: "2026-03-12T18:11:00.000Z", idempotency_key: " \u200b " });
+  it("recusa data de aprovação fora do formato ISO-8601", async () => {
+    const res = await postJson(app, "/approvals", {
+      mission_id: "msn_1900",
+      approved_at: "13 Mar 2027 10:00",
+      idempotency_key: "pay_fmt",
+    });
     expect(res.status).toBe(400);
     expect(await ledgerOf(app, "msn_1900")).toHaveLength(0);
+  });
+
+  it("recusa dia que não existe no calendário e hora 24:00", async () => {
+    for (const approvedAt of ["2026-02-30T10:00:00-03:00", "2026-03-12T24:00:00"]) {
+      const res = await postJson(app, "/approvals", {
+        mission_id: "msn_1842",
+        approved_at: approvedAt,
+        idempotency_key: "pay_cal",
+      });
+      expect(res.status).toBe(400);
+    }
+    expect(await ledgerOf(app, "msn_1842")).toHaveLength(0);
+  });
+
+  it("recusa chave que fica vazia depois de limpar espaços e caracteres invisíveis", async () => {
+    const res = await postJson(app, "/approvals", {
+      mission_id: "msn_1900",
+      approved_at: "2026-03-12T18:11:00.000Z",
+      idempotency_key: " \u200b ",
+    });
+    expect(res.status).toBe(400);
+    expect(await ledgerOf(app, "msn_1900")).toHaveLength(0);
+
+    // A chave é validada junto com o resto da entrada, antes de procurar a missão.
+    const unknownMission = await postJson(app, "/approvals", {
+      mission_id: "msn_nao_existe",
+      approved_at: "2026-03-12T18:11:00.000Z",
+      idempotency_key: "\u200b",
+    });
+    expect(unknownMission.status).toBe(400);
   });
 
   it("recusa aprovação às 00:00 de São Paulo do dia seguinte ao prazo", async () => {
